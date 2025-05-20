@@ -11,6 +11,8 @@ contract P2PLending is Ownable, AutomationCompatibleInterface {
     AggregatorV3Interface public priceFeed;
     IERC20 public stableCoin;
 
+    // Loan struct
+    // ✅ interestRate: Use basis points (BPS) or percent * 100 or * 10000 to avoid floating point numbers in Solidity
     struct Loan {
         address borrower;
         address lender;
@@ -18,6 +20,7 @@ contract P2PLending is Ownable, AutomationCompatibleInterface {
         uint256 loanAmount; // in USDC (6 decimals)
         uint256 startTime;
         uint256 duration;
+        uint256 interestRate;     // e.g. 1000 = 10.00% APR (x10000 scale) 
         bool isRepaid;
         bool isLiquidated;
     }
@@ -41,7 +44,7 @@ contract P2PLending is Ownable, AutomationCompatibleInterface {
     }
 
     // Borrower creates a loan request by sending ETH collateral
-    function requestLoan(uint256 _loanAmount, uint256 _duration) external payable {
+    function requestLoan(uint256 _loanAmount, uint256 _duration, uint256 _interestRate) external payable {
         require(msg.value > 0, "Collateral required");
         require(_loanAmount > 0, "Loan amount required");
 
@@ -52,6 +55,7 @@ contract P2PLending is Ownable, AutomationCompatibleInterface {
             loanAmount: _loanAmount,
             startTime: 0,
             duration: _duration,
+            interestRate: _interestRate,
             isRepaid: false,
             isLiquidated: false
         });
@@ -82,7 +86,11 @@ contract P2PLending is Ownable, AutomationCompatibleInterface {
         require(msg.sender == loan.borrower, "Not borrower");
         require(!loan.isRepaid && !loan.isLiquidated, "Loan closed");
 
-        require(stableCoin.transferFrom(msg.sender, loan.lender, loan.loanAmount), "Repay transfer failed");
+        // Calculate interest in real-time using simple interest
+        uint256 elapsed = block.timestamp - loan.startTime;
+        uint256 interest = (loan.loanAmount * loan.interestRate * elapsed) / (365 days * 10000);
+        uint256 totalOwed = loan.loanAmount + interest;
+        require(stableCoin.transferFrom(msg.sender, loan.lender, totalOwed), "Repay transfer failed");
 
         loan.isRepaid = true;
 
@@ -168,22 +176,19 @@ contract P2PLending is Ownable, AutomationCompatibleInterface {
         return activeLoanIds;
     }
 
-    function toString(uint256 value) internal pure returns (string memory) {
-        if (value == 0) {
-            return "0";
+    // getTotalRepayable (because of simple interest)
+    function getTotalRepayable(uint256 _loanId) public view returns (uint256 totalOwed, uint256 interest) {
+        Loan storage loan = loans[_loanId];
+        if (loan.isRepaid || loan.isLiquidated || loan.startTime == 0) {
+            return (0, 0); // loan chưa bắt đầu hoặc đã đóng
         }
-        uint256 temp = value;
-        uint256 digits;
-        while (temp != 0) {
-            digits++;
-            temp /= 10;
-        }
-        bytes memory buffer = new bytes(digits);
-        while (value != 0) {
-            digits -= 1;
-            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
-            value /= 10;
-        }
-        return string(buffer);
+
+        uint256 elapsed = block.timestamp - loan.startTime;
+
+        // interestRate is basis points (1000 = 10%)
+        interest = (loan.loanAmount * loan.interestRate * elapsed) / (365 days * 10000);
+        totalOwed = loan.loanAmount + interest;
+
+        return (totalOwed, interest);
     }
 }

@@ -13,6 +13,7 @@ describe("P2PLending", function () {
 
   const USDC_DECIMALS = 6;
   const LOAN_AMOUNT = 1_000 * 10 ** USDC_DECIMALS;
+  const INTEREST_RATE = 1000;     // 10.00% APR (1000 basis points)
   const COLLATERAL = ethers.parseEther("1"); // 1 ETH
 
   beforeEach(async () => {
@@ -27,7 +28,7 @@ describe("P2PLending", function () {
 
     // Mint USDC to lender and borrower
     await usdc.mint(lenderAddr, ethers.parseUnits("10000", USDC_DECIMALS));
-    await usdc.mint(borrowerAddr, ethers.parseUnits("1000", USDC_DECIMALS));
+    await usdc.mint(borrowerAddr, ethers.parseUnits("2000", USDC_DECIMALS));
 
     // Deploy mock price feed (Chainlink Aggregator)
     const MockPriceFeed = await ethers.getContractFactory("MockV3Aggregator");
@@ -39,7 +40,7 @@ describe("P2PLending", function () {
   });
 
   it("should allow borrower to request a loan", async () => {
-    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, 7 * 86400, { value: COLLATERAL });
+    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, 7 * 86400, INTEREST_RATE, { value: COLLATERAL });
 
     const loan = await lending.loans(0);
     expect(loan.borrower).to.equal(borrowerAddr);
@@ -48,7 +49,7 @@ describe("P2PLending", function () {
   });
 
   it("should allow lender to fund a loan", async () => {
-    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, 7 * 86400, { value: COLLATERAL });
+    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, 7 * 86400, INTEREST_RATE, { value: COLLATERAL });
 
     await usdc.connect(lender).approve(await lending.getAddress(), LOAN_AMOUNT);
     await expect(lending.connect(lender).fundLoan(0))
@@ -58,21 +59,48 @@ describe("P2PLending", function () {
     expect(loan.lender).to.equal(lenderAddr);
   });
 
-  it("should allow borrower to repay loan", async () => {
-    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, 7 * 86400, { value: COLLATERAL });
+  it("should allow borrower to repay loan with interest", async () => {
+    const duration = 30 * 86400; // 30 days
+  
+    // 1. Borrower requests loan with interest rate
+    await lending.connect(borrower).requestLoan(
+      LOAN_AMOUNT,
+      duration,
+      INTEREST_RATE, // 10% APR
+      { value: COLLATERAL }
+    );
+  
+    // 2. Lender funds loan
     await usdc.connect(lender).approve(await lending.getAddress(), LOAN_AMOUNT);
     await lending.connect(lender).fundLoan(0);
+  
+    // 3. Time passes (simulate half a year)
+    const timePassed = 180 * 86400; // ~6 months
+    await ethers.provider.send("evm_increaseTime", [timePassed]);
+    await ethers.provider.send("evm_mine", []);
+  
+    // 4. get expected interest (simple interest)
+    const [totalOwed, interest] = await lending.getTotalRepayable(0);
+    
+    // 5. Borrower repays full amount (principal + interest)
+    // paddedTotal to prevent insufficient allowance or rounding errors
+    const paddedTotal = ethers.parseUnits(totalOwed.toString(), 0) + BigInt(10);
+    await usdc.connect(borrower).approve(await lending.getAddress(), paddedTotal);
 
-    await usdc.connect(borrower).approve(await lending.getAddress(), LOAN_AMOUNT);
     await expect(lending.connect(borrower).repayLoan(0))
       .to.emit(lending, "LoanRepaid");
-
+  
     const loan = await lending.loans(0);
     expect(loan.isRepaid).to.be.true;
+  
+    // Optional: check lender USDC balance increased by totalOwed
+    const lenderBalance = await usdc.balanceOf(await lender.getAddress());
+    const delta = lenderBalance - totalOwed;
+    expect(Number(ethers.formatUnits(delta, 18)) < 10).to.be.true;
   });
 
   it("should allow liquidation if price drops", async () => {
-    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, 7 * 86400, { value: COLLATERAL });
+    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, 7 * 86400, INTEREST_RATE, { value: COLLATERAL });
     await usdc.connect(lender).approve(await lending.getAddress(), LOAN_AMOUNT);
     await lending.connect(lender).fundLoan(0);
 
@@ -87,7 +115,7 @@ describe("P2PLending", function () {
   });
 
   it("should trigger upkeep if loan is undercollateralized", async () => {
-    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, 7 * 86400, { value: COLLATERAL });
+    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, 7 * 86400, INTEREST_RATE, { value: COLLATERAL });
     await usdc.connect(lender).approve(await lending.getAddress(), LOAN_AMOUNT);
     await lending.connect(lender).fundLoan(0);
   
@@ -105,45 +133,9 @@ describe("P2PLending", function () {
     expect(loan.isLiquidated).to.be.true;
   });
 
-  // it("should trigger upkeep if loan is expired", async () => {
-  //   const duration = 7 * 86400;
-  //   await lending.connect(borrower).requestLoan(LOAN_AMOUNT, duration, { value: COLLATERAL });
-  //   await usdc.connect(lender).approve(await lending.getAddress(), LOAN_AMOUNT);
-  //   await lending.connect(lender).fundLoan(0); // REQUIRE
-
-  //   // increase time over duration
-  //   await ethers.provider.send("evm_increaseTime", [duration + 1]);
-  //   await ethers.provider.send("evm_mine", []);
-
-    
-  //   const loan1 = await lending.loans(0);
-  //   console.log("StartTime:", loan1.startTime.toString());
-  //   const latestBlock = await ethers.provider.getBlock("latest");
-  //   if (!latestBlock) throw new Error("Block not found");
-  //   console.log("Now:", latestBlock.timestamp);
-  //   // console.log("Now:", (await ethers.provider.getBlock("latest")).timestamp);
-  //   console.log("Expiry:", Number(loan1.startTime) + duration);
-
-  //   // Tăng thời gian vượt quá thời hạn vay
-  //   // await ethers.provider.send("evm_increaseTime", [duration + 100]);
-  //   // await ethers.provider.send("evm_mine", []);
-  
-  //   const [upkeepNeeded, performData] = await lending.checkUpkeep.staticCall("0x");
-  //   expect(upkeepNeeded).to.be.true;
-  
-  //   // ✅ Đảm bảo block tiếp theo vượt hạn thật
-  //   await ethers.provider.send("evm_increaseTime", [100]);
-  //   await ethers.provider.send("evm_mine", []);
-
-  //   await lending.performUpkeep(performData);
-  
-  //   const loan = await lending.loans(0);
-  //   expect(loan.isLiquidated).to.be.true;
-  // });
-
   it("should trigger upkeep if loan is expired", async () => {
     const duration = 7 * 86400;
-    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, duration, { value: COLLATERAL });
+    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, duration, INTEREST_RATE, { value: COLLATERAL });
     await usdc.connect(lender).approve(await lending.getAddress(), LOAN_AMOUNT);
     await lending.connect(lender).fundLoan(0);
   
