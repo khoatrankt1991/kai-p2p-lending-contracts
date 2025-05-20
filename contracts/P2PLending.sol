@@ -3,10 +3,11 @@ pragma solidity ^0.8.28;
 
 // import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol";
+import {AutomationCompatibleInterface} from "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract P2PLending is Ownable {
+contract P2PLending is Ownable, AutomationCompatibleInterface {
     AggregatorV3Interface public priceFeed;
     IERC20 public stableCoin;
 
@@ -24,6 +25,11 @@ contract P2PLending is Ownable {
     uint256 public loanId;
     mapping(uint256 => Loan) public loans;
 
+    // Automation state
+    uint256[] public activeLoanIds;
+    mapping(uint256 => bool) public isActiveLoan;
+
+    // Events
     event LoanRequested(uint256 indexed loanId, address indexed borrower, uint256 collateral, uint256 loanAmount);
     event LoanFunded(uint256 indexed loanId, address indexed lender);
     event LoanRepaid(uint256 indexed loanId);
@@ -49,6 +55,9 @@ contract P2PLending is Ownable {
             isRepaid: false,
             isLiquidated: false
         });
+        // Add to active loan list
+        activeLoanIds.push(loanId);
+        isActiveLoan[loanId] = true;
 
         emit LoanRequested(loanId, msg.sender, msg.value, _loanAmount);
         loanId++;
@@ -83,8 +92,40 @@ contract P2PLending is Ownable {
         emit LoanRepaid(_loanId);
     }
 
+    // Chainlink Automation - checkUpkeep
+    function checkUpkeep(bytes calldata) external view override returns (bool upkeepNeeded, bytes memory performData) {
+        for (uint256 i = 0; i < activeLoanIds.length; i++) {
+            uint256 id = activeLoanIds[i];
+            Loan storage loan = loans[id];
+
+            if (!loan.isRepaid && !loan.isLiquidated) {
+                (, int price,,,) = priceFeed.latestRoundData();
+                if (price <= 0) continue;
+
+                uint256 ethPrice = uint256(price);
+                uint256 collateralUSD = (loan.collateralAmount * ethPrice) / 1e18;
+                uint256 loanAmountUSD = loan.loanAmount * 1e2; // USDC 6 -> 8 decimals
+
+                bool underCollateralized = collateralUSD * 100 < loanAmountUSD * 120;
+                bool expired = block.timestamp > loan.startTime + loan.duration;
+
+                if (underCollateralized || expired) {
+                    return (true, abi.encode(id));
+                }
+            }
+        }
+
+        return (false, bytes(""));
+    }
+
+    // Chainlink Automation - performUpkeep
+    function performUpkeep(bytes calldata performData) external override {
+        uint256 id = abi.decode(performData, (uint256));
+        liquidateLoan(id);
+    }
+
     // Check and perform liquidation
-    function liquidateLoan(uint256 _loanId) external {
+    function liquidateLoan(uint256 _loanId) public {
         Loan storage loan = loans[_loanId];
         require(!loan.isRepaid && !loan.isLiquidated, "Loan closed");
 
@@ -96,11 +137,19 @@ contract P2PLending is Ownable {
         uint256 collateralUSD = (loan.collateralAmount * ethPrice) / 1e18;
 
         // Normalize loanAmount (6 decimals) to 8 decimals to compare (IMPORTANT)
-        uint256 normalizedLoan = loan.loanAmount * 1e2;
-        // Liquidation threshold: if collateral < 120% of loan
-        require(collateralUSD * 100 < normalizedLoan * 120, "Not eligible for liquidation");
+        uint256 loanAmountUSD = loan.loanAmount * 1e2;
+    
+        // ✅ Make sure collateralUSD * 100 < normalizedLoan * 120
+        bool underCollateralized = collateralUSD * 100 < loanAmountUSD * 120;
+        
+        // ✅ Make sure loan is expired
+        bool expired = block.timestamp > loan.startTime + loan.duration;
 
+        require(underCollateralized || expired, "Not eligible for liquidation");
         loan.isLiquidated = true;
+
+        // Remove from active loan list
+        isActiveLoan[_loanId] = false;
 
         // Send collateral to lender
         payable(loan.lender).transfer(loan.collateralAmount);
@@ -112,5 +161,29 @@ contract P2PLending is Ownable {
     function getLatestPrice() public view returns (int) {
         (, int price,,,) = priceFeed.latestRoundData();
         return price;
+    }
+
+    // View helper
+    function getActiveLoans() external view returns (uint256[] memory) {
+        return activeLoanIds;
+    }
+
+    function toString(uint256 value) internal pure returns (string memory) {
+        if (value == 0) {
+            return "0";
+        }
+        uint256 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            digits -= 1;
+            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+            value /= 10;
+        }
+        return string(buffer);
     }
 }

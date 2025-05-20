@@ -85,4 +85,84 @@ describe("P2PLending", function () {
     const loan = await lending.loans(0);
     expect(loan.isLiquidated).to.be.true;
   });
+
+  it("should trigger upkeep if loan is undercollateralized", async () => {
+    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, 7 * 86400, { value: COLLATERAL });
+    await usdc.connect(lender).approve(await lending.getAddress(), LOAN_AMOUNT);
+    await lending.connect(lender).fundLoan(0);
+  
+    // Giả lập ETH/USD giảm mạnh xuống $600
+    await priceFeed.updateAnswer(ethers.parseUnits("600", 8));
+  
+    // Gọi checkUpkeep
+    const [upkeepNeeded, performData] = await lending.checkUpkeep.staticCall("0x");
+    expect(upkeepNeeded).to.be.true;
+  
+    // Gọi performUpkeep
+    await lending.performUpkeep(performData);
+  
+    const loan = await lending.loans(0);
+    expect(loan.isLiquidated).to.be.true;
+  });
+
+  // it("should trigger upkeep if loan is expired", async () => {
+  //   const duration = 7 * 86400;
+  //   await lending.connect(borrower).requestLoan(LOAN_AMOUNT, duration, { value: COLLATERAL });
+  //   await usdc.connect(lender).approve(await lending.getAddress(), LOAN_AMOUNT);
+  //   await lending.connect(lender).fundLoan(0); // REQUIRE
+
+  //   // increase time over duration
+  //   await ethers.provider.send("evm_increaseTime", [duration + 1]);
+  //   await ethers.provider.send("evm_mine", []);
+
+    
+  //   const loan1 = await lending.loans(0);
+  //   console.log("StartTime:", loan1.startTime.toString());
+  //   const latestBlock = await ethers.provider.getBlock("latest");
+  //   if (!latestBlock) throw new Error("Block not found");
+  //   console.log("Now:", latestBlock.timestamp);
+  //   // console.log("Now:", (await ethers.provider.getBlock("latest")).timestamp);
+  //   console.log("Expiry:", Number(loan1.startTime) + duration);
+
+  //   // Tăng thời gian vượt quá thời hạn vay
+  //   // await ethers.provider.send("evm_increaseTime", [duration + 100]);
+  //   // await ethers.provider.send("evm_mine", []);
+  
+  //   const [upkeepNeeded, performData] = await lending.checkUpkeep.staticCall("0x");
+  //   expect(upkeepNeeded).to.be.true;
+  
+  //   // ✅ Đảm bảo block tiếp theo vượt hạn thật
+  //   await ethers.provider.send("evm_increaseTime", [100]);
+  //   await ethers.provider.send("evm_mine", []);
+
+  //   await lending.performUpkeep(performData);
+  
+  //   const loan = await lending.loans(0);
+  //   expect(loan.isLiquidated).to.be.true;
+  // });
+
+  it("should trigger upkeep if loan is expired", async () => {
+    const duration = 7 * 86400;
+    await lending.connect(borrower).requestLoan(LOAN_AMOUNT, duration, { value: COLLATERAL });
+    await usdc.connect(lender).approve(await lending.getAddress(), LOAN_AMOUNT);
+    await lending.connect(lender).fundLoan(0);
+  
+    // Tăng thời gian vượt duration
+    await ethers.provider.send("evm_increaseTime", [duration + 1]);
+    await ethers.provider.send("evm_mine", []);
+  
+    const [upkeepNeeded, performData] = await lending.checkUpkeep.staticCall("0x");
+    expect(upkeepNeeded).to.be.true;
+  
+    // ✅ Đảm bảo block tiếp theo vượt hạn thật
+    await ethers.provider.send("evm_increaseTime", [100]);
+    await ethers.provider.send("evm_mine", []);
+  
+    await lending.performUpkeep(performData);
+  
+    const loan = await lending.loans(0);
+    expect(loan.isLiquidated).to.be.true;
+  });
+  
+  
 });
