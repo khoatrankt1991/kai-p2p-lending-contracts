@@ -7,7 +7,7 @@ import "@nomicfoundation/hardhat-toolbox";
 // Alchemy API Key
 const AICHEMY_KEY = process.env.AICHEMY_KEY || ''
 const ACCOUNT_PRIVATE_KEY = process.env.ACCOUNT_PRIVATE_KEY || ''
-const LOCALHOST_PRIVATE_KEY = process.env.LOCALHOST_PRIVATE_KEY || ''
+const LOCALHOST_OX = process.env.LOCALHOST_OX || ''
 
 // Verify Contract: npx hardhat verify --network sepoliaTestnet 0x709e141B3e4411D235D6E3736d763e7545F1916B
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY || ''
@@ -19,7 +19,7 @@ const config: HardhatUserConfig = {
   networks: {
     ganacheLocalhost: {
       url: `http://127.0.0.1:8545`,
-      accounts: [LOCALHOST_PRIVATE_KEY]
+      accounts: [LOCALHOST_OX]
     },
     sepolia: {
       url: `https://eth-sepolia.g.alchemy.com/v2/${AICHEMY_KEY}`,
