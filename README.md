@@ -68,3 +68,27 @@ You can implement a subgraph to support efficient frontend queries and historica
 
 ```bash
 npx hardhat test
+
+---
+
+## 🌐 Sepolia Deployment Info
+
+This project has been deployed on the **Sepolia testnet** with the following live components:
+
+### 🔗 Chainlink ETH/USD Price Feed (Sepolia)
+- Address: `0x694AA1769357215DE4FAC081bf1f309aDC325306`
+- 📘 Official source: [Chainlink Docs – Sepolia Feeds](https://docs.chain.link/data-feeds/price-feeds/addresses#sepolia-testnet)
+
+### 💵 USDC Token on Sepolia
+- Address: `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238`
+
+Make sure to acquire USDC test tokens or request them via faucet/test sender.
+
+### 📄 Deployed P2PLending Contract
+- Address: `0x576aaEb65dF546694d73431FFed7eBC21861B515`
+- Network: Sepolia Testnet
+
+### ⚙️ Chainlink Automation Setup
+- Use [Chainlink Automation Custom Logic](https://automation.chain.link/new-custom-logic) to register automated upkeep for loan liquidation (via `checkUpkeep` and `performUpkeep`).
+
+---
